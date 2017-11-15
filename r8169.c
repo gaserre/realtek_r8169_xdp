@@ -29,6 +29,7 @@
 #include <linux/prefetch.h>
 #include <linux/ipv6.h>
 #include <net/ip6_checksum.h>
+#include <linux/bpf.h>
 
 #include <asm/io.h>
 #include <asm/irq.h>
@@ -855,6 +856,8 @@ struct rtl8169_private {
 #define RTL_FIRMWARE_UNKNOWN	ERR_PTR(-EAGAIN)
 
 	u32 ocp_base;
+
+	struct bpf_prog *xdp_prog;
 };
 
 MODULE_AUTHOR("Realtek and the Linux r8169 crew <netdev@vger.kernel.org>");
@@ -7668,6 +7671,45 @@ static void rtl8169_netpoll(struct net_device *dev)
 }
 #endif
 
+static int rtl8169_xdp_set(struct net_device *dev, struct bpf_prog *prog)
+{
+	struct rtl8169_private *tp = netdev_priv(dev);
+	struct bpf_prog *old_prog;
+
+	rtl_lock_work(tp);
+	/* todo: Add rcu protection, if only for barrier stuff and documentation */
+	/* XXX: Need to reset?  It's not clear why */
+	old_prog = xchg(&tp->xdp_prog, prog);
+	if (prog) {
+		bpf_prog_add(prog, 1);
+	}
+	if (old_prog) {
+		bpf_prog_put(old_prog);
+	}
+	
+	rtl_unlock_work(tp);
+	return 0;
+}
+
+static bool rtl8169_xdp_attached(struct net_device *dev)
+{
+	struct rtl8169_private *tp = netdev_priv(dev);
+	return !!tp->xdp_prog;
+}
+
+static int rtl8169_xdp(struct net_device *dev, struct netdev_xdp *xdp)
+{
+	switch (xdp->command) {
+	case XDP_SETUP_PROG:
+		return rtl8169_xdp_set(dev, xdp->prog);
+	case XDP_QUERY_PROG:
+		xdp->prog_attached = rtl8169_xdp_attached(dev);
+		return 0;
+	default:
+		return -EINVAL;
+	}
+}
+
 static int rtl_open(struct net_device *dev)
 {
 	struct rtl8169_private *tp = netdev_priv(dev);
@@ -8041,6 +8083,7 @@ static const struct net_device_ops rtl_netdev_ops = {
 #ifdef CONFIG_NET_POLL_CONTROLLER
 	.ndo_poll_controller	= rtl8169_netpoll,
 #endif
+	.ndo_xdp			= rtl8169_xdp,
 
 };
 
@@ -8484,6 +8527,8 @@ static int rtl_init_one(struct pci_dev *pdev, const struct pci_device_id *ent)
 
 	netif_carrier_off(dev);
 
+	printk("Glenn\n");
+	
 out:
 	return rc;
 
