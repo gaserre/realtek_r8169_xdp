@@ -859,6 +859,14 @@ struct rtl8169_private {
 	u32 ocp_base;
 
 	struct bpf_prog __rcu *xdp_prog;
+	struct rtl_xdp_counters {
+		u64 set;
+		u64 pass;
+		u64 drop;
+		u64 tx;
+		u64 aborted;
+		u64 unknown;
+	} xdp_counters;
 };
 
 MODULE_AUTHOR("Realtek and the Linux r8169 crew <netdev@vger.kernel.org>");
@@ -2204,6 +2212,12 @@ static const char rtl8169_gstrings[][ETH_GSTRING_LEN] = {
 	"multicast",
 	"tx_aborted",
 	"tx_underrun",
+	"xdp_set",
+	"xdp_pass",
+	"xdp_drop",
+	"xdp_tx",
+	"xdp_aborted",
+	"xdp_unknown",
 };
 
 static int rtl8169_get_sset_count(struct net_device *dev, int sset)
@@ -2341,6 +2355,13 @@ static void rtl8169_get_ethtool_stats(struct net_device *dev,
 	data[10] = le32_to_cpu(counters->rx_multicast);
 	data[11] = le16_to_cpu(counters->tx_aborted);
 	data[12] = le16_to_cpu(counters->tx_underun);
+	data[13] = tp->xdp_counters.set;
+	data[14] = tp->xdp_counters.pass;
+	data[15] = tp->xdp_counters.drop;
+	data[16] = tp->xdp_counters.tx;
+	data[17] = tp->xdp_counters.aborted;
+	data[18] = tp->xdp_counters.unknown;
+
 }
 
 static void rtl8169_get_strings(struct net_device *dev, u32 stringset, u8 *data)
@@ -7692,7 +7713,7 @@ static int rtl8169_xdp_set(struct net_device *dev, struct bpf_prog *prog)
 	if (old_prog) {
 		bpf_prog_put(old_prog);
 	}
-	
+	tp->xdp_counters.set++;
 	rtl_unlock_work(tp);
 	return 0;
 }
