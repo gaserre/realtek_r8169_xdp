@@ -30,6 +30,7 @@
 #include <linux/ipv6.h>
 #include <net/ip6_checksum.h>
 #include <linux/bpf.h>
+#include <linux/rcupdate.h>
 
 #include <asm/io.h>
 #include <asm/irq.h>
@@ -857,7 +858,7 @@ struct rtl8169_private {
 
 	u32 ocp_base;
 
-	struct bpf_prog *xdp_prog;
+	struct bpf_prog __rcu *xdp_prog;
 };
 
 MODULE_AUTHOR("Realtek and the Linux r8169 crew <netdev@vger.kernel.org>");
@@ -897,6 +898,9 @@ static void rtl_unlock_work(struct rtl8169_private *tp)
 {
 	mutex_unlock(&tp->wk.mutex);
 }
+
+/* macro to avoid CONFIG_LOCKDEP issues */
+#define rtl_work_lock_held(tp) lockdep_is_held(&tp->wk.mutex)
 
 static void rtl_tx_performance_tweak(struct pci_dev *pdev, u16 force)
 {
@@ -7677,12 +7681,14 @@ static int rtl8169_xdp_set(struct net_device *dev, struct bpf_prog *prog)
 	struct bpf_prog *old_prog;
 
 	rtl_lock_work(tp);
-	/* todo: Add rcu protection, if only for barrier stuff and documentation */
-	/* XXX: Need to reset?  It's not clear why */
-	old_prog = xchg(&tp->xdp_prog, prog);
+	/* The mlx4 driver resets in certain conditions, but it's not clear we'd need
+	   a reset in this driver. */
+	old_prog = rcu_dereference_protected(tp->xdp_prog, rtl_work_lock_held(tp));
+	rcu_assign_pointer(tp->xdp_prog, prog);
 	if (prog) {
 		bpf_prog_add(prog, 1);
 	}
+	synchronize_rcu();
 	if (old_prog) {
 		bpf_prog_put(old_prog);
 	}
