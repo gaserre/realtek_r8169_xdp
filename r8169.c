@@ -7388,15 +7388,47 @@ static struct sk_buff *rtl8169_try_rx_copy(void *data,
 					   int pkt_size,
 					   dma_addr_t addr)
 {
-	struct sk_buff *skb;
+	struct sk_buff *skb = NULL;
 	struct device *d = &tp->pci_dev->dev;
+	struct bpf_prog *xdp_prog;
 
 	data = rtl8169_align(data);
 	dma_sync_single_for_cpu(d, addr, pkt_size, DMA_FROM_DEVICE);
 	prefetch(data);
+	rcu_read_lock();
+	xdp_prog = rcu_dereference(tp->xdp_prog);
+	if (xdp_prog) {
+		struct xdp_buff xdp;
+		u32 action;
+		xdp.data = data;
+		xdp.data_end = data + pkt_size;
+		action = bpf_prog_run_xdp(xdp_prog, &xdp);
+		switch (action) {
+		case XDP_PASS:
+			tp->xdp_counters.pass++;
+			break;
+		case XDP_DROP:
+			tp->xdp_counters.drop++;
+			goto xdp_drop;
+		case XDP_TX:
+			/* XXX: it's not clear we can implement this given the current driver memory model,
+			   but that needs some investigation. */
+			tp->xdp_counters.tx++;
+			goto xdp_drop;
+		case XDP_ABORTED:
+			tp->xdp_counters.aborted++;
+			goto xdp_drop;
+		default:
+			bpf_warn_invalid_xdp_action(action);
+			tp->xdp_counters.unknown++;
+			goto xdp_drop;
+		}
+	}
+	rcu_read_unlock();
 	skb = napi_alloc_skb(&tp->napi, pkt_size);
 	if (skb)
 		memcpy(skb->data, data, pkt_size);
+xdp_drop:
 	dma_sync_single_for_device(d, addr, pkt_size, DMA_FROM_DEVICE);
 
 	return skb;
